@@ -4,10 +4,12 @@
 
 package frc.robot;
 
+import edu.wpi.first.wpilibj.Compressor;
+import edu.wpi.first.wpilibj.DoubleSolenoid;
 import edu.wpi.first.wpilibj.Joystick;
 import edu.wpi.first.wpilibj.TimedRobot;
-import edu.wpi.first.wpilibj.Timer;
-import edu.wpi.first.wpilibj.motorcontrol.Spark;
+import edu.wpi.first.wpilibj.DoubleSolenoid.Value;
+import edu.wpi.first.wpilibj.drive.DifferentialDrive;
 import edu.wpi.first.wpilibj.smartdashboard.SendableChooser;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 
@@ -28,20 +30,70 @@ public class Robot extends TimedRobot {
    * initialization code.
    */
 
-  private Spark leftMotor1 = new Spark(0); 
-  private Spark leftMotor2 = new Spark(1); 
-  private Spark rightMotor1 = new Spark(2); 
-  private Spark rightMotor2 = new Spark(3); 
-  
-  private Joystick joy1 = new Joystick(0);
+  private WPI_TalonSRX leftMaster = new WPI_TalonSRX(3);
+  private WPI_TalonSRX rightMaster = new WPI_TalonSRX(1);
+  private WPI_VictorSPX leftSlave =  new WPI_VictorSPX(1);
+  private WPI_VictorSPX rightSlave = new WPI_VictorSPX(2);
 
-  private double startTime;
+  private WPI_TalonSRX armMotor = new WPI_TalonSRX(5);
+  private WPI_VictorSPX armSlave = new WPI_VictorSPX(3);
 
+  private WPI_TalonSRX rollerMotor = new WPI_TalonSRX(4);
+
+  private Compressor  compressor = new Compressor();
+  private DoubleSolenoid hatchIntake = new DoubleSolenoid(0, 1); // PCM port 0, 1
+
+  private DifferentialDrive drive = new DifferentialDrive(leftMaster, rightMaster);
+
+  // joysticks
+  private Joystick driverJoystick = new Joystick(0);
+  private Joystick operatorJoystick = new Joystick(1);
+
+  // unit conversion
+  private final double kDriveTick2Feet = 1.0 / 4096 * 6 * Math.PI / 12;
+  private final double kArmTick2Deg = 360. / 512 * 26 / 42 * 18 / 60 * 18 / 84;
+    
   @Override
   public void robotInit() {
-    m_chooser.setDefaultOption("Default Auto", kDefaultAuto);
-    m_chooser.addOption("My Auto", kCustomAuto);
-    SmartDashboard.putData("Auto choices", m_chooser);
+    // inverted settings
+    leftMaster.setInverted(true);
+    rightMaster.setInverted(true);
+    armMotor.setInverted(false);
+
+    // slave setups
+    leftSlave.follow(leftMaster);
+    rightSlave.follow(rightMaster);
+    armSlave.follow(armMotor);
+
+    leftSlave.setInverted(InvertType.FolloMaster);
+    rightSlave.setInverted(InvertedType.FollowMaster);
+    armSlave.setInverted(InvertType.FollowMaster);
+
+    // init encoders
+    leftMaster.configSelectedFeedbackSensor(FeedbackDevice.CTRE_MagEncoder_Relative, 0, 10);
+    rightMaster.configSelectedFeedbackSensor(FeedbackDevice.CTRE_MagEncoder_Relative, 0, 10);
+    armMotor.configSelectedFeedbackSensor(FeedbackDevice.QuadEncoder, 0, 10);
+
+    leftMaster.setSensorPhase(false);
+    rightMaster.setSensorPhase(true);
+    armMotor.setSensorPhase(true);
+
+    // reset encoders to zero
+    leftMaster.setSelectedSensorPosition(0, 0, 10);
+    rightMaster.setSelectedSensorPosition(0, 0, 10);
+    armMotor.setSelectedSensorPosition(0, 0, 10);
+
+    //set encoder boundary limits: to stop motors
+    armMotor.configSelectedFeedbackSensor((int) (0 / kArmTick2Deg), 10);
+    armMotor.configForwardSoftLimitThereshold((int) (175 / kArmTick2Deg), 10);
+
+    armMotor.configForwardSoftLimitEnable(true, 10);
+    armMotor.configForwardSoftLimitEnable(true, 10);
+
+    // start compressor
+    compressor.start();
+
+    drive.setDeadband(0.05);
   }
 
   /**
@@ -52,67 +104,89 @@ public class Robot extends TimedRobot {
    * SmartDashboard integrated updating.
    */
   @Override
-  public void robotPeriodic() {}
+  public void robotPeriodic() {
+    SmartDashboard.putNumber("Arm Encoder Value",  armMotor.getSelectedSensorPosition() * kArmTick2Deg);
+    SmartDashboard.putNumber("Left Dirve Encoder Value", leftMaster.getSelectedSensorPosition() * kDriveTick2Feet);
+    SmartDashboard.putNumber("Right Drive Encoder Value", rightMaster.getSelectedSensorPosition() * kDriveTick2Feet);  
+  }
 
-  /**
-   * This autonomous (along with the chooser code above) shows how to select between different
-   * autonomous modes using the dashboard. The sendable chooser code works with the Java
-   * SmartDashboard. If you prefer the LabVIEW Dashboard, remove all of the chooser code and
-   * uncomment the getString line to get the auto name from the text box below the Gyro
-   *
-   * <p>You can add additional auto modes by adding additional comparisons to the switch structure
-   * below with additional strings. If using the SendableChooser make sure to add them to the
-   * chooser code above as well.
-   */
   @Override
   public void autonomousInit() {
-    startTime = Timer.getFPGATimestamp();
+    enableMotors(true);
+    // reset encoders to zero
+    leftMaster.setSelectedSensorPosition(0, 0, 10);
+    rightMaster.setSelectedSensorPosition(0, 0, 10);
+    armMotor.setSelectedSensorPosition(0, 0, 10);
   }
 
   /** This function is called periodically during autonomous. */
   @Override
   public void autonomousPeriodic() {
-    double time = Timer.getFPGATimestamp();
+    double leftPosititon = leftMaster.getSelectedSensorPosition() * kDriveTick2Feet;
+    double rightPosition = rightMaster.getSelectedSensorPosition() * kDriveTick2Feet;
+    double distance = (leftPosition + rightPosition) / 2;
 
-    if (time - startTime < 3){
-    leftMotor1.set(0.6);
-    leftMotor2.set(0.6);
-    rightMotor1.set(-0.6);
-    rightMotor2.set(-0.6);
-    }
-    else{
-    leftMotor1.set(0);
-    leftMotor2.set(0);
-    rightMotor1.set(0);
-    rightMotor2.set(0);
-    }
-
+    if (distance < 10){
+      drive.tankDrive(0.6, 0.6);
+      }
+      else{
+        drive.tankDrive(0, 0);
+      }
   }
 
   /** This function is called once when teleop is enabled. */
   @Override
-  public void teleopInit() {}
-
+  public void teleopInit() {
+    enableMotors(true);
+  }
   /** This function is called periodically during operator control. */
   @Override
-  public void teleopPeriodic() {
-    double speed = -joy1.getRawAxis(1) * 0.6;
-    double turn = joy1.getRawAxis(4) * 0.3;
-
-    double left = speed + turn; // Left Power
-    double right = speed - turn; // Right Power
-
-    leftMotor1.set(0.5);
-    leftMotor2.set(0.5);
-    rightMotor1.set(-0.5);
-    rightMotor2.set(-0.5);
-  }
+  public void teleopPeriodic() {}
 
   /** This function is called once when the robot is disabled. */
   @Override
-  public void disabledInit() {}
+  public void disabledInit() {
+  // driving
+  double power = -driverJoystick.getRawAxis(1); // remember: negative sign
+  double turn = driverJoystick.getRawAxis(4);
 
-  /** This function is called periodically when disabled. */
+  /**
+  // deadband
+  if (Math.abs(power) < 0.05){
+    power = 0;
+  }
+  if (Math.abs(turn) < 0.05){
+    turn = 0;
+  }
+  **/
+  drive.arcadeDrive(power * 0.6, turn * 0.3);
+
+  // arm control
+  double armPower = -operatorJoystick.getRawAxis(1); // remember negative sign
+  if (Math.abs(armPower) < 0.05){
+    armPower = 0;
+  }
+  armPower *= 0.5;
+  armMotor.set(ControlMode.PercentOutput, armPower);
+
+  // roller control
+  double rollerPower = 0;
+  if (operatorJoystick.getRawButton(0) == true){
+    rollerPower  = -1;
+  } else if (operatorJoystick.getRawButton(2)){
+    rollerPower = -1;
+  }
+  rollerMotor.set(ControlMode.PercentOutput, rollerPower);
+
+  // hatch intake
+  if (operatorJoystick.getRawButton(3)){
+    hatchIntake.set(Value.kReverse);
+  } else{
+    hatchIntake.set(Value.kForward);
+  }
+
+}
+
   @Override
   public void disabledPeriodic() {}
 
@@ -122,7 +196,9 @@ public class Robot extends TimedRobot {
 
   /** This function is called periodically during test mode. */
   @Override
-  public void testPeriodic() {}
+  public void testPeriodic() {
+    enableMotors(false);
+  }
 
   /** This function is called once when the robot is first started up. */
   @Override
@@ -131,4 +207,22 @@ public class Robot extends TimedRobot {
   /** This function is called periodically whilst in simulation. */
   @Override
   public void simulationPeriodic() {}
+
+  private void enableMotors(boolean on){
+    NeutraLMode mode;
+    if (on) {
+      model = NeutralMode.Brake;
+    }
+    else {
+      mode = NeutralMode.Coast;
+    }
+  leftMaster.setNeutralMode(mode);
+  rightMaster.setNeutralMode(mode);
+  leftSlave.setNeutralMode(mode);
+  rightSlave.setNeutralMode(mode);
+  armMotor.setNeutralMode(mode);
+  armSlave.setNeutralMode(mode);
+  rollerMotor.setNeutralMode(mode);
+  }
 }
+
